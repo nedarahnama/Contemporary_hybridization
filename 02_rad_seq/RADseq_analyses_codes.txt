@@ -1,0 +1,71 @@
+# < Genetic architecture of phenotypic differences between endangered hybridizing Arabis floodplain species >
+# < PhD Thesis >
+# < Neda Rahnamae> 
+
+# < Chapter 2 - Genetic architecture of phenotypic differences between endangered hybridizing Arabis floodplain species >
+# From *.fastq to *.vcf
+
+
+###################################
+Tools and versions:
+bcftools (v. 1.18)
+bwa (v. 0.7.17)
+Cutadapt (v. 1.18)
+FastQC (v. 0.11.9)
+python (2.7.15)
+samtools (v. 1.10, 1.13)
+Stacks (v. 2.59)
+vcftools (v. 0.1.17)
+
+###################################
+Codes and commands that have been used for RAD-seq data analysis, mapping, and SNP calling (in order): 
+
+1- Removing PCR duplicates:
+clone_filter -1 {0} -2 {1} -o duprem/ -i gzfastq --oligo_len_1 5 --inline_null 2 > duprem/clonfilt_log{2}
+
+2- Trimming reads and adapters: 
+cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -q 30 -m 60 --trim-n -o trimmed/{0} -p trimmed/{1} {2} {3}
+
+3- De-multiplexing samples: 
+process_radtags -1 {0} -2 {1} -e kpnI --inline_null --barcode_dist_1 1 -c -q -r -b /scratch/nrahnama/01_NGS_Raw_Data/fq_files/barcodes/barcodes_pool{2} -o samples/ -i gzfastq -y fastq
+
+4- Mapping Reads: 
+# Absolute path to the stacks 2 protocol directory
+work=/scratch/nrahnama/01_NGS_Raw_Data
+
+# Open the popmap file, and loop over the samples with a `while` loop
+cat $work/refAlign/pool_01_to_08_samplenames.txt | cut -f 1 |
+while read sample; do
+    # Create variables for each sample
+    fq1=$work/samples/${sample}.1.fq # Forward reads
+    fq2=$work/samples/${sample}.2.fq # Reverse reads
+    bam=$work/refAlign/${sample}.bam      # BAM output
+    # Align reads and process alignments
+    bwa mem /scratch/nrahnama/new_nemo_genome/arabis_nem.hic.p_ctg_8Chr_RagTag_Mod.fasta  $fq1 $fq2 | samtools  view -b -h | samtools sort -o $bam
+done
+
+5- Variant calling:
+5.1. bcftools mpileup -E -q 30 -f {0} --ignore-RG {1} -a DP,AD,SP --threads 8 | bcftools call -O z -o ArabisF2_bcfcall.gzvcf -m -p 0.05 -f GQ,GP --threads 8
+
+5.2. vcftools --gzvcf /scratch/nrahnama1/bcf/ArabisF2_bcfcall.gzvcf --max-missing 0.5 --recode --recode-INFO-all --out 02_filter0.5missing
+
+5.3. vcftools --vcf /scratch/nrahnama1/bcf/02_filter0.5missing.recode.vcf --max-alleles 2 --remove-indels --remove-filtered-all --recode --out 03_miss0.5_indels_biallelic
+
+5.4. vcftools --vcf /scratch/nrahnama1/bcf/03_miss0.5_indels_biallelic.recode.vcf --remove-filtered-all --remove /scratch/nrahnama1/bcf/0.6missingindv --recode --out 04_miss0.5_indels_biallelic_0.6indmiss
+
+5.5. vcftools --vcf /scratch/nrahnama1/bcf/04_miss0.5_indels_biallelic_0.6indmiss.recode.vcf --min-meanDP 4 --max-meanDP 40 --minDP 5 --maxDP 40 --recode --out 05_miss0.5_indels_biallelic_4meanDP40_5DP40
+
+5.6. vcftools --vcf /scratch/nrahnama1/bcf/05_miss0.5_indels_biallelic_4meanDP40_5DP40.recode.vcf --max-missing 0.7 --recode --out 06_3_miss0.5_indels_biallelic_4meanDP40_5DP40_miss0.7
+
+5.7. python /scratch/nrahnama1/bcf/06_makeLoci_repeat_analysis.py /scratch/nrahnama1/bcf_new/06_3_miss0.5_indels_biallelic_4meanDP40_5DP40_miss0.7.recode.vcf /scratch/nrahnama1/bcf_new/07_3_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci.vcf
+
+5.8. 
+bcftools index 07_3_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci.vcf.gz
+bcftools isec -n 2 -p shared_variants/ 07_3_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci.vcf.gz nem_sag_onlypolymorphic.vcf.gz
+- Rename vcf file of F2 that contains variants that are present in parents:
+/home/alle/Neda/repeat_analysis/parents/shared_variants/0000.vcf -> 08_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci_sharedvariants.vcf
+
+5.9. python /scratch/nrahnama1/bcf/07_remAmbigBases_repeat_analysis.py /scratch/nrahnama1/bcf_new/08_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci_sharedvariants.vcf /scratch/nrahnama1/bcf_new/09_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci_sharedvariants_NoAmbigbp.vcf
+
+5.10. vcftools --vcf /scratch/nrahnama1/bcf_new/09_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci_sharedvariants_NoAmbigbp.vcf --maf 0.25 --recode --out /scratch/nrahnama1/bcf_new/10_miss0.5_indels_biallelic_0.6indmiss_4meanDP40_5DP40_miss0.7_RADloci_sharedvariants_NoAmbigbp_maf0.25.vcf 
+

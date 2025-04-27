@@ -1,0 +1,239 @@
+###############
+# Script for Arabis nemorensis genome assembly and curation pipeline
+# Quality checks, K-mer and GenomeScope analysis, HiFi and Hi-C based assembly, Assembly QC (BUSCO, QUAST)
+# Scaffolding with RagTag, Inversion correction (manual curation), LASTAL alignment for comparative genomics
+# Telomere identification with tidk
+###############
+
+
+#!/bin/bash -l
+#SBATCH --job-name=arabis_assembly
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=20
+#SBATCH --mem=150gb
+#SBATCH --time=200:00:00
+#SBATCH --account=UniKoeln
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=tali@uni-koeln.de
+#SBATCH --error=/projects/ag-demeaux/tali/arabis_nemorensis_genome/Hic_Hifi/%x-%j.err
+#SBATCH --output=/projects/ag-demeaux/tali/arabis_nemorensis_genome/Hic_Hifi/%x-%j.out
+
+set -euo pipefail # If any command returns a non-zero status (i.e., fails), the script immediately exits
+
+# ─────────────────────────────────────────────────────────────
+# Load modules
+# ─────────────────────────────────────────────────────────────
+module purge
+module load hifiasm
+module load busco
+module load quast
+module load ragtag
+module load samtools
+module load seqkit
+module load jellyfish
+module load R
+module load python/3.11  # For tidk and smudgeplot if used
+
+# ─────────────────────────────────────────────────────────────
+# Define paths
+# ─────────────────────────────────────────────────────────────
+WORKDIR=/projects/ag-demeaux/tali/arabis_nemorensis_genome/Hic_Hifi
+HIFI_READS=/projects/ag-demeaux/irina/Arabis_Genome_Project/CCS/Arabis-nemorensis-ref10.hifireads.fastq.gz
+HIC_R1=/projects/ag-demeaux/nrahnama/6910_ref/juicer_nemo/fastq/5794_A_L1_R1.fastq.gz
+HIC_R2=/projects/ag-demeaux/nrahnama/6910_ref/juicer_nemo/fastq/5794_A_L1_R2.fastq.gz
+REF=/projects/ag-demeaux/tali/arabis_alpina_reference/Arabis_alpina.fasta
+CHROM_INVERT_SCRIPT=/projects/ag-demeaux/tali/scripts/fix_inversions.sh
+
+cd $WORKDIR
+
+# ─────────────────────────────────────────────────────────────
+# Step 1: Raw read quality check
+# ─────────────────────────────────────────────────────────────
+seqkit stats $HIFI_READS $HIC_R1 $HIC_R2 > raw_data_quality.txt
+
+# ─────────────────────────────────────────────────────────────
+# Step 2: K-mer analysis and GenomeScope
+# ─────────────────────────────────────────────────────────────
+jellyfish count -C -m 21 -s 5G -t 20 -o mer_counts.jf <(zcat $HIFI_READS)
+jellyfish histo -t 20 mer_counts.jf > mer_counts.histo
+mkdir -p genomescope
+Rscript -e "genomescope2::genomescope('mer_counts.histo', 21, 'genomescope', 90)"
+
+# Optional Step: Smudgeplot (for ploidy check)
+# jellyfish dump -c mer_counts.jf > mer_counts.dump
+# smudgeplot.py hetkmers -o smudge -k 21 -i mer_counts.dump
+# smudgeplot.py plot -i smudge_coverages.tsv -o smudgeplot
+
+# ─────────────────────────────────────────────────────────────
+# Step 3: Assembly with HiFiasm
+# ─────────────────────────────────────────────────────────────
+hifiasm -o arabis_nem.asm -t 20 --n-hap 2 --h1 $HIC_R1 --h2 $HIC_R2 $HIFI_READS 2> arabis_nem.asm.log
+# Convert GFA to FASTA
+grep '^S' arabis_nem.asm.bp.p_utg.gfa | cut -f2,3 | awk '{print ">"$1"\n"$2}' > arabis_nem.contigs.fa
+
+# ─────────────────────────────────────────────────────────────
+# Step 4: BUSCO & QUAST 
+# ─────────────────────────────────────────────────────────────
+# Assess completeness with BUSCO
+busco -i arabis_nem.contigs.fa -o busco_arabis_nem -l brassicales_odb10 -m genome -c 20
+# Assess assembly stats with QUAST
+quast.py -o quast_arabis_nem -t 20 arabis_nem.contigs.fa
+
+# ─────────────────────────────────────────────────────────────
+# Step 5: RagTag scaffolding using Arabis alpina
+# ─────────────────────────────────────────────────────────────
+ragtag.py scaffold $REF arabis_nem.contigs.fa -o ragtag_output -t 20
+cd ragtag_output
+cp ragtag.scaffold.fasta ../arabis_nem.ragtag.fa
+cd ..
+
+# ─────────────────────────────────────────────────────────────
+# Step 6: Manual chromosome-level curation using genetic map (misjoins or chromosome inversions)
+# ─────────────────────────────────────────────────────────────
+bash $CHROM_INVERT_SCRIPT arabis_nem.ragtag.fa corrected_genome_v2.fasta
+
+# ─────────────────────────────────────────────────────────────
+# Step 7: LASTAL comparative alignment (Arabis Sagittata and Arabis nemorensis)
+# ─────────────────────────────────────────────────────────────
+lastdb -P20 -uNEAR -R11 -c A_sag_DB /path/to/arabis_sag.fasta
+lastal -P20 -E0.05 -C2 --split-f=MAF+ A_sag_DB corrected_genome_v2.fasta | last-split -m3 > a-sag_vs_nem_inverted.maf
+last-dotplot --width 1200 --height 1200 a-sag_vs_nem_inverted.maf a-sag_vs_nem_inverted.png
+
+# ─────────────────────────────────────────────────────────────
+# Step 8: Telomere analysis using tidk
+# ─────────────────────────────────────────────────────────────
+tidk find --fasta corrected_genome_v2.fasta --clade Brassicales --output telomere_find
+tidk search --string AAACCCT --fasta corrected_genome_v2.fasta --output telomeric_search
+tidk plot --csv telomeric_search_telomeric_repeat_windows.csv --output a.nem_telomere --height 120 --width 800
+
+echo "✅ All steps completed: Assembly, Curation, Comparative Alignment, Telomere check"
+
+
+##########
+# fix_inversions.sh
+##########
+
+
+#!/bin/bash
+
+# Input and output files
+input_fasta="arabis_nem.hic.p_ctg_8Chr_RagTag_Mod.fasta"
+output_fasta="corrected_genome_final.fasta"
+temp_fasta="tmp.fa"
+
+# Define inversion segments (multiple per chromosome if needed)
+declare -A segments
+segments["AN669790.1"]="9633902 30118065"
+segments["AN669791.1"]="14905130 18532952"
+segments["AN669793.1"]="8080549 22121730"
+segments["AN669794.1"]="9969197 14465267;1 26822521"  # Two inversions on AN669794.1
+
+# Create an empty output file
+> "$output_fasta"
+
+# Process each chromosome
+for chr in $(grep '^>' "$input_fasta" | sed 's/^>//'); do
+    echo "Processing $chr..."
+
+    # Extract the full chromosome sequence
+    samtools faidx "$input_fasta" "$chr" > "$temp_fasta"
+    seq=$(grep -v '^>' "$temp_fasta" | tr -d '\n')
+    echo "Total chromosome length: ${#seq}"
+
+    corrected_seq="$seq"
+
+    # Check if there are inversion segments for this chromosome
+    if [[ -n "${segments[$chr]}" ]]; then
+        echo "Inversions found for $chr"
+        IFS=';' read -ra inv_segments <<< "${segments[$chr]}"
+        
+        # Apply each inversion in reverse order (to not offset coordinates)
+        for ((i=${#inv_segments[@]}-1; i>=0; i--)); do
+            segment_coords=(${inv_segments[$i]})
+            start=${segment_coords[0]}
+            end=${segment_coords[1]}
+            echo "  Inverting: $chr:$start-$end"
+
+            pre=${corrected_seq:0:$(($start - 1))}
+            segment=${corrected_seq:$(($start - 1)):$(($end - $start + 1))}
+            post=${corrected_seq:$end}
+
+            revcomp=$(echo "$segment" | rev | tr 'ACGTacgt' 'TGCAtgca')
+            corrected_seq="${pre}${revcomp}${post}"
+        done
+    else
+        echo "No inversions for $chr"
+    fi
+
+    # Write to the output FASTA
+    echo ">$chr" >> "$output_fasta"
+    echo "$corrected_seq" | fold -w 60 >> "$output_fasta"
+done
+
+# Cleanup
+rm "$temp_fasta"
+
+echo "✅ All chromosomes processed. Corrected genome written to $output_fasta"
+
+
+########
+# R Script to plot Telemeric repeats
+########
+
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+
+# Load telomeric repeat data
+df <- read.csv("telemere_find_telomeric_repeat_windows.csv", sep = ",", header = TRUE)
+
+# Calculate maximum repeat count across forward and reverse directions
+df$max_repeat_number <- pmax(df$forward_repeat_number, df$reverse_repeat_number)
+
+# Add formatted chromosome names
+df$chromosome_name <- paste("Chromosome", df$id)
+
+# Extract final window per chromosome (used for annotation placement)
+label_positions <- df %>%
+  group_by(id) %>%
+  filter(window == max(window)) %>%
+  ungroup()
+
+# Plot telomeric repeat counts along chromosomes
+p <- ggplot(df, aes(x = window / 1e6, y = max_repeat_number)) +  # x-axis in Mb
+  geom_line(aes(color = factor(id))) +
+  geom_point(size = 0.5, aes(color = factor(id))) +
+  facet_wrap(~ chromosome_name, scales = "free_x") +  # One panel per chromosome
+  labs(
+    title = expression(paste("Telomere-to-telomere genome assembly of ", italic("Arabis nemorensis"))),
+    x = "Window Position (Mb)",
+    y = "Telomeric Repeat Count per 1 Kb Window"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 14),
+    strip.text = element_text(face = "bold")
+  ) +
+  # Annotate approximate chromosome size on each facet
+  geom_text(
+    data = label_positions,
+    aes(
+      x = window / 1e6 * 0.9,  # Position near end of x-axis
+      y = max_repeat_number * 0.95,  # Slightly below top
+      label = paste("~", round(window / 1e6, 2), "Mb")
+    ),
+    inherit.aes = FALSE,
+    size = 4,
+    color = "black",
+    hjust = 1
+  )
+
+# Display the plot
+print(p)
+
+# Save the plot to file
+ggsave("Telomeric_repeats_by_chromosome.png", plot = p, width = 10, height = 6, dpi = 300)
