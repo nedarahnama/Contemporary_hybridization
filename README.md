@@ -32,10 +32,11 @@ https://github.com/nedarahnama/Contemporary_hybridization/tree/master/03_rad_seq
 https://github.com/nedarahnama/Contemporary_hybridization/tree/master/04_genetic_map
 <br>Suppl. File 5. QTL mapping construction: 
 https://github.com/nedarahnama/Contemporary_hybridization/tree/master/05_qtl_mapping
-<br>Suppl. File 6. Flowering time fine mapping analysis: 
-https://github.com/nedarahnama/Contemporary_hybridization/tree/master/06_fine_mapping
-<br>Suppl. File 7. Sweep detection: 
+<br>Suppl. File 6. Sweep detection: 
 https://github.com/Luker121/OverlapSweepQTL/tree/main
+<br>Suppl. File 7. Flowering time fine mapping analysis: 
+https://github.com/nedarahnama/Contemporary_hybridization/tree/master/06_fine_mapping
+
  
 
 
